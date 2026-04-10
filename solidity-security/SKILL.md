@@ -87,9 +87,45 @@ Check every early-return path — a variable skipped on one branch is often the 
 
 ## Integer Arithmetic
 
-- Never disable 0.8+ overflow/underflow protection in production — document bounds carefully if using `unchecked`
-- Round in the protocol's favor: round down for withdrawals, round up for minting debt
-- Multiply before divide for precision; use PRBMath or FixedPointMathLib for fixed-point
+- Solidity 0.8+ overflow/underflow protection is on by default — don't disable it in production (`unchecked` blocks must be justified)
+- For fixed-point arithmetic, use `1e18` scaling or a battle-tested library (PRBMath, FixedPointMathLib)
+- Rounding direction matters in DeFi: always round in the protocol's favor (round down for withdrawals, round up for minting debt)
+- Avoid division before multiplication — it truncates precision. Multiply first, then divide.
+
+---
+
+## Timestamp / Block Dependence
+
+- `block.timestamp` can be pushed ±12 seconds by validators — never use it for sub-minute precision (e.g. lottery draws, short-window auctions)
+- For timeouts where precision matters, prefer `block.number` over `block.timestamp`
+- Never use `blockhash` for randomness — it is predictable by miners and only available for the last 256 blocks; use Chainlink VRF instead
+- `block.timestamp` is acceptable for coarse-grained deadlines (hours or days), not fine-grained ones
+
+---
+
+## Static Analysis
+
+Run [Slither](https://github.com/crytic/slither) before every audit submission:
+
+```bash
+pip install slither-analyzer
+slither . --json slither-report.json
+```
+
+Key detectors to review and triage:
+
+| Detector | Severity | What it flags |
+|---|---|---|
+| `reentrancy-eth` | High | Reentrancy with ETH transfers |
+| `reentrancy-no-eth` | Medium | Reentrancy without ETH |
+| `uninitialized-state` | High | Uninitialized state variables |
+| `arbitrary-send-eth` | High | ETH sent to attacker-controlled address |
+| `controlled-delegatecall` | High | `delegatecall` to user-controlled destination |
+| `locked-ether` | Medium | Contract receives ETH but has no withdraw path |
+| `suicidal` | High | Unprotected `selfdestruct` |
+| `unchecked-transfer` | High | ERC20 `transfer`/`transferFrom` return value ignored |
+
+Triage each finding as true positive or false positive before acting — Slither can over-report on proxies and upgradeable patterns.
 
 ---
 

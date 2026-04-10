@@ -39,7 +39,7 @@ Solmate's `SafeTransferLib` does **not** check whether the target address is a c
 
 ### Fee-on-Transfer Tokens
 
-Some tokens (e.g. SAFEMOON, early REFLECT tokens) deduct a fee from each transfer. The recipient receives less than the `amount` argument:
+Some tokens (e.g. PAXG, SAFEMOON, older REFLECT tokens) deduct a fee from each transfer. The recipient receives less than the `amount` argument:
 
 ```solidity
 // Apparent: user deposited 100 tokens
@@ -59,12 +59,26 @@ balances[msg.sender] += received; // use actual received amount
 
 ### Rebasing Tokens
 
-Rebasing tokens (e.g. stETH, aTokens) change the balance of every holder at regular intervals without emitting `Transfer` events. A contract that stores `amount` deposited and expects to return exactly `amount` will encounter a mismatch:
+Rebasing tokens (e.g. stETH, AMPL, aTokens) change the balance of every holder at regular intervals without emitting `Transfer` events. A contract that stores `amount` deposited and expects to return exactly `amount` will encounter a mismatch:
 
 - **Positive rebase** (stETH rewards): contract holds more tokens than accounted — yield is locked in the contract
 - **Negative rebase** (slashing): contract holds fewer tokens — protocol is insolvent
 
-**Mitigation:** Use share-based accounting rather than raw token amounts. Store the user's _proportion_ of the pool, not an absolute token count. Alternatively, explicitly document that rebasing tokens are not supported.
+**Mitigation:** Use share-based accounting rather than raw token amounts (e.g. wrap rebasing tokens into a non-rebasing wrapper before accepting them). Alternatively, explicitly document that rebasing tokens are not supported and add a check/denylist.
+
+### Pausable and Blocklist Tokens
+
+Tokens like USDC, USDT, and many bridged assets can:
+- **Pause all transfers** (e.g. emergency stop)
+- **Blocklist specific addresses** (e.g. OFAC compliance)
+
+A transfer to or from a blocked address will revert even with `safeTransfer`. Design your protocol to handle these gracefully:
+- Don't assume transfers always succeed even with `safeTransfer`
+- Provide an escape hatch for stuck funds if a token gets paused mid-operation
+
+### Flash-Mintable Tokens
+
+Tokens with a flash mint function can have their `totalSupply` temporarily inflated to an arbitrary value within one transaction. Don't use `totalSupply()` as a reliable bound intra-transaction for security decisions.
 
 ### `approve` Race Condition
 
@@ -104,6 +118,47 @@ Audit your protocol for any code path where `from` and `to` could be equal, espe
 if (recipient == address(0)) revert Transfer__ZeroAddress();
 token.safeTransfer(recipient, amount);
 ```
+
+---
+
+## ERC-20 Conformity Checklist
+
+When integrating a new token, verify it actually conforms to ERC-20:
+
+### Required Functions
+- [ ] `totalSupply()` returns `uint256`
+- [ ] `balanceOf(address)` returns `uint256`
+- [ ] `transfer(address, uint256)` returns `bool`
+- [ ] `transferFrom(address, address, uint256)` returns `bool`
+- [ ] `approve(address, uint256)` returns `bool`
+- [ ] `allowance(address, address)` returns `uint256`
+
+### Required Events
+- [ ] `Transfer(address indexed from, address indexed to, uint256 value)`
+- [ ] `Approval(address indexed owner, address indexed spender, uint256 value)`
+
+### Behavioral Checks
+- [ ] `transfer(0)` does not revert — emits Transfer event with 0 value
+- [ ] Self-transfers (`transfer(self, amount)`) do not revert or double-count
+- [ ] `approve()` overwrites existing allowance without requiring reset to 0
+- [ ] `transferFrom` reduces the allowance by the transferred amount
+
+---
+
+## Weird ERC-20 Patterns Reference
+
+| Pattern | Risk | Detection |
+|---|---|---|
+| Fee-on-transfer | Balance accounting mismatch | Check balance before/after transfer |
+| Rebasing / elastic supply | Share accounting breaks on rebase | Check for `rebase()` or `sync()` events |
+| Pausable | Transfers can be blocked globally | Check for `pause()` / `unpause()` functions |
+| Blocklist | Specific addresses cannot transfer | Check for address-based restriction functions |
+| Multiple entry points | Proxy with multiple implementation paths | Check for multiple `transfer` codepaths |
+| Missing return value | Silent failure on direct `.transfer()` call | Use SafeERC20 |
+| Large approval reverting | Some tokens cap approval values | Test with `type(uint256).max` approve |
+| Flash-mintable | `totalSupply` can spike intra-tx | Check for `flashMint()` function |
+
+See also: [d-xo/weird-erc20](https://github.com/d-xo/weird-erc20) for a comprehensive list with test cases.
 
 ---
 
