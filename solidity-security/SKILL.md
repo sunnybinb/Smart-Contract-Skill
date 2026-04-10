@@ -138,15 +138,8 @@ Triage each finding as true positive or false positive before acting — Slither
 
 ## Deployment Patterns
 
-- `new ContractName(...)` implicitly reverts on deployment failure — no manual check needed
 - Inline `assembly create` / `create2` does **not** revert — check `deployed == address(0)` manually
 - With CREATE2 across chains: include chain-specific data in the salt if constructor args differ per chain
-
----
-
-## Static Analysis
-
-Run `slither .` and `aderyn .` before every audit submission. Focus on High findings — treat all as blocking, investigate Medium. Triage accepted risks with an inline `// slither-disable-next-line` comment explaining why.
 
 ---
 
