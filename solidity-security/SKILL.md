@@ -11,6 +11,27 @@ the `solidity-test` skill.
 
 ---
 
+## Before Starting Any Review
+
+Before reviewing any contract, gather the following from the user. If any item is missing,
+ask for it — do not proceed with assumptions.
+
+**Required:**
+1. **Protocol PRD or spec** — what is this contract supposed to do? What are the core user flows (deposit, withdraw, claim, etc.)?
+2. **Roles and trust model** — who are the privileged actors (owner, operator, guardian)? What can each role do?
+3. **Key invariants** — what must always be true? (e.g. "total supply equals sum of balances", "collateral always exceeds debt")
+4. **External dependencies** — which external contracts does this call? (oracles, tokens, bridges, other protocols)
+5. **Scope** — which files / contracts are in scope for this review?
+
+**If anything is unclear, ask before reviewing.** A security review without understanding intended behavior produces noise, not signal — logic bugs can only be found by comparing code against intent.
+
+Example questions to ask if context is missing:
+- "What should happen if a user calls `withdraw` while the contract is paused?"
+- "Is the owner expected to be a multisig or an EOA?"
+- "Should users be able to deposit tokens not in the allowlist, or is that an error?"
+
+---
+
 ## Reentrancy
 
 - Follow CEI (Checks → Effects → Interactions) on every state-changing function
