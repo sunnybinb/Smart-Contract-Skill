@@ -1,14 +1,6 @@
 ---
 name: solidity-security
-description: "Audit, review, or harden Solidity smart contracts against known vulnerability patterns. Use when asked to audit a contract, find vulnerabilities, review security, prepare for an audit, or when implementing patterns that require security awareness: reentrancy, oracle manipulation, flash loans, signature replay, DoS, upgradeable storage collisions, access control exploits. Also triggers for pre-audit checklists and security-focused code review."
-tags:
-  - solidity
-  - smart-contracts
-  - security
-  - audit
-  - evm
-  - defi
-  - vulnerabilities
+description: "Audit, review, or harden Solidity smart contracts against known vulnerability patterns. Use when asked to audit a contract, find vulnerabilities, review security, prepare for an audit, or when implementing patterns that require security awareness: reentrancy, oracle manipulation, flash loans, signature replay, DoS, upgradeable storage collisions, access control exploits, ERC20/721/1155 token safety, logic correctness, multi-chain issues. Also triggers for pre-audit checklists, static analysis, and security-focused code review."
 ---
 
 # Solidity Security Patterns
@@ -21,127 +13,116 @@ the `solidity-test` skill.
 
 ## Reentrancy
 
-Follow CEI strictly: **Checks → Effects → Interactions**
-
-```solidity
-function withdraw(uint256 amount) external nonReentrant {
-    // Checks
-    if (balances[msg.sender] < amount) revert Vault__InsufficientBalance();
-    // Effects — state updated before external call
-    balances[msg.sender] -= amount;
-    // Interactions — external call last
-    SafeTransferLib.safeTransferETH(msg.sender, amount);
-}
-```
-
-- Use `nonReentrant` on any function that sends ETH or calls an untrusted external contract
-- Prefer `ReentrancyGuardTransient` (EIP-1153) over `ReentrancyGuard` — same protection, cheaper gas
-- Put `nonReentrant` before other modifiers in the modifier list
-- Read-only reentrancy is also a real attack vector — view functions that read state mid-call can return inconsistent values; protect them too if they feed external decisions (e.g. oracle consumers)
+- Follow CEI (Checks → Effects → Interactions) on every state-changing function
+- Add `nonReentrant` to any function that sends ETH or calls an untrusted contract
+- Prefer `ReentrancyGuardTransient` (EIP-1153) — same protection, cheaper gas
+- Put `nonReentrant` before other modifiers
+- **ERC-721/1155 callbacks**: `safeTransferFrom` triggers `onERC721Received`/`onERC1155Received` on recipient — apply CEI + `nonReentrant` before any safe-transfer call
+- **Read-only reentrancy**: view functions reading state mid-call can return inconsistent data if consumed by external oracle-like logic
 
 ---
 
-## Oracle Safety
+## Interface & Parameter Validation
 
-- Never use AMM spot prices as oracles — trivially manipulated in one transaction
-- Use Chainlink `latestRoundData()`, validate ALL return values, and check staleness:
-
-```solidity
-(uint80 roundId, int256 price, , uint256 updatedAt, uint80 answeredInRound) =
-    priceFeed.latestRoundData();
-if (price <= 0) revert Oracle__InvalidPrice();
-if (updatedAt < block.timestamp - MAX_STALENESS) revert Oracle__StalePrice();
-if (answeredInRound < roundId) revert Oracle__IncompleteRound();
-```
-
-- Use TWAP (time-weighted average price) as a secondary check for high-value operations
-- Don't read oracle prices in the same block as a large balance change — use commit-reveal or delay patterns for high-value liquidations
+- Verify `msg.sender` permissions explicitly in every external function — don't rely on assumed upstream context
+- Reject unknown/invalid enum values explicitly — never silently fall through to a default
+- Validate equal-length arrays before use in batch functions
 
 ---
 
-## Flash Loan / Same-Block Manipulation
+## State Variable Completeness
 
-- Don't use `token.balanceOf(address(this))` for accounting — an attacker can donate tokens to skew it. Use internal tracked balances instead.
-- Treat any value that can move atomically (balances, prices, totals) as potentially adversarial
-- Price-dependent logic (liquidations, minting, borrowing) must use oracle prices, not on-chain spot values
-- If your contract checks a condition and acts on it in the same transaction, assume an attacker can set that condition to any value they want
+For every state-changing operation, update **all** affected variables — partial updates are a frequent source of critical bugs:
+- Per-user balance AND global total
+- Forward mapping AND inverse/secondary index
+- Decrement counter on remove AND corresponding array cleanup
+- Position amount set to zero AND status flag updated
 
----
-
-## Access Control Vulnerabilities
-
-- Protect UUPS `_authorizeUpgrade` — an unprotected upgrade function is catastrophic. Always gate it with `onlyOwner` or equivalent
-- Never leave `initialize()` callable after deployment — use OpenZeppelin's `Initializable` and `_disableInitializers()` in the constructor of implementation contracts
-- Add timelocks for critical parameter changes (fee rates, collateral ratios, oracle addresses) so users can exit before changes take effect
-- Don't rely on `tx.origin` for authentication — use `msg.sender`
-- Two-step ownership: use `Ownable2Step` so accidental transfer to a wrong address can be cancelled before it takes effect
+Check every early-return path — a variable skipped on one branch is often the bug.
 
 ---
 
-## Signature Safety
+## Logic Correctness
 
-Always use EIP-712 typed structured data. Include nonce, chainId, and contract address to prevent replay:
+- A `return` inside a helper doesn't short-circuit the caller — always check the return value
+- Validate denominator ≠ 0 before division; validate `a >= b` before `a - b` in `unchecked` blocks
+- Multiply before divide: `(a * b) / c` preserves precision; `(a / c) * b` truncates early
+- Every `if` without `else` — confirm the no-branch path is intentionally valid, not a silent pass-through
 
-```solidity
-// Use OpenZeppelin's EIP712 + ECDSA — never hand-roll signature verification
-bytes32 structHash = keccak256(abi.encode(TYPEHASH, nonce, chainId, amount));
-bytes32 digest = _hashTypedDataV4(structHash);
-address signer = ECDSA.recover(digest, signature);
-```
+---
 
-- Nonce per signer: invalidate after use — never allow signature reuse
-- Chain ID in domain separator: prevents cross-chain replay (EIP-712 handles this if domain is set correctly)
-- Contract address in domain separator: prevents replay against a different contract with same interface
-- Use `SignatureChecker` from OpenZeppelin to support both EOA and ERC-1271 smart wallet signers
-- Validate `signer != address(0)` — `ECDSA.recover` returns zero for malformed signatures
+## Native Token Handling
+
+- Never use `transfer()` or `send()` — the 2300 gas stipend fails for multisig recipients; use `SafeTransferLib.safeTransferETH()` or `Address.sendValue()`
+- Refund excess ETH in `payable` functions with variable cost — check `msg.value > cost` and return the surplus
+- Add `receive()` only if the contract is intentionally meant to hold ETH
+- Validate `msg.value == 0` on non-payable paths to prevent accidental ETH lock
+
+---
+
+## Loop Safety
+
+- Avoid unbounded loops over user-controlled arrays in state-changing functions — add pagination or process off-chain
+- `continue` inside an `unchecked {}` loop with the increment at the bottom causes an infinite loop — the `continue` jumps past `++i`; move the increment before `continue`
+
+---
+
+## Access Control
+
+- Verify `msg.sender` at the top of every privileged function; never use `tx.origin`
+- Use `Ownable2Step` (not `Ownable`); use `AccessControl` for multi-role systems
+- Add timelocks for critical parameter changes (fee rates, collateral ratios, oracle addresses)
+- Admin setters need the same access control as privileged operations
 
 ---
 
 ## DoS Vectors
 
-- Don't loop over unbounded user-supplied arrays in state-changing functions — add pagination or process off-chain
-- Use pull-over-push for ETH payments: let users call `withdraw()` instead of the contract pushing ETH to a list of recipients
-- Don't use `transfer()` or `send()` — the 2300 gas stipend is insufficient post-EIP-2929. Use `SafeTransferLib.safeTransferETH()`
-- Avoid logic that can be blocked by a single user failing (e.g. reverting in a `receive()` hook) — pull pattern solves this
-- Be careful with `try/catch` around external calls — a revert inside the catch can still be triggered by the callee
-
----
-
-## Upgradeable Contracts
-
-- Never change the order, type, or remove existing storage variables in an upgrade — causes storage collisions and corrupts state
-- Add storage gaps in base contracts so future versions can add state variables: `uint256[50] private __gap;`
-- Always write fork tests for upgrade paths — test the actual upgrade against a mainnet fork, not just unit tests
-- Call all parent `__init` functions in `initialize()` — missing one can leave the contract in a broken state
-- Prefer UUPS over Transparent Proxy — UUPS puts upgrade logic in the implementation (cheaper for users, upgrade auth is explicit)
-- Use `@openzeppelin/hardhat-upgrades` or `forge-upgrades` to validate storage layout compatibility before deploying an upgrade
-- For UUPS: the `_authorizeUpgrade` function must be properly protected; for Transparent Proxy: only the ProxyAdmin can upgrade
+- Use pull-over-push for ETH payments — let users call `withdraw()` instead of the contract pushing funds
+- Don't loop over unbounded user arrays in state-changing functions
+- Avoid logic blocked by a single failing user (e.g. a `receive()` hook that reverts) — pull pattern solves this
+- `try/catch` around external calls — a revert inside the callee's `catch` can still propagate; test the full call stack
 
 ---
 
 ## Integer Arithmetic
 
-- Solidity 0.8+ overflow/underflow protection is on by default — don't disable it in production (`unchecked` blocks must be justified)
-- For fixed-point arithmetic, use `1e18` scaling or a battle-tested library (PRBMath, FixedPointMathLib)
-- Rounding direction matters in DeFi: always round in the protocol's favor (round down for withdrawals, round up for minting debt)
-- Avoid division before multiplication — it truncates precision. Multiply first, then divide.
+- Never disable 0.8+ overflow/underflow protection in production — document bounds carefully if using `unchecked`
+- Round in the protocol's favor: round down for withdrawals, round up for minting debt
+- Multiply before divide for precision; use PRBMath or FixedPointMathLib for fixed-point
 
 ---
 
-## Pre-Audit Checklist
+## Configuration Safety
 
-Run through this before submitting for external audit:
+- Validate non-zero address for all payment recipients and privileged roles at configuration time
+- Validate `startTime < endTime`; compare correctly against `block.timestamp`
 
-- [ ] All admin/owner roles are multisigs for mainnet (never plain EOA)
-- [ ] No `initialize()` callable after deployment — `_disableInitializers()` in implementation constructor
-- [ ] CEI pattern followed on every state-changing external-call function
-- [ ] `nonReentrant` on all ETH-sending and untrusted-external-call functions
-- [ ] All Chainlink return values validated, staleness checked
-- [ ] No `token.balanceOf(this)` used for internal accounting
-- [ ] EIP-712 signatures include nonce, chainId, contract address; nonces invalidated after use
-- [ ] No unbounded loops over user-controlled arrays
-- [ ] No `transfer()` or `send()` — use `SafeTransferLib`
-- [ ] Upgrade storage layout validated with tooling
-- [ ] Fuzz and invariant tests pass with meaningful run count (≥ 10,000)
-- [ ] Security contact in NatSpec on every deployed contract
-- [ ] **Get an external audit before deploying significant value to mainnet**
+---
+
+## Deployment Patterns
+
+- `new ContractName(...)` implicitly reverts on deployment failure — no manual check needed
+- Inline `assembly create` / `create2` does **not** revert — check `deployed == address(0)` manually
+- With CREATE2 across chains: include chain-specific data in the salt if constructor args differ per chain
+
+---
+
+## Static Analysis
+
+Run `slither .` and `aderyn .` before every audit submission. Focus on High findings — treat all as blocking, investigate Medium. Triage accepted risks with an inline `// slither-disable-next-line` comment explaining why.
+
+---
+
+## References
+
+Load the relevant reference file when the contract involves that scenario:
+
+| Scenario | Reference |
+|----------|-----------|
+| ERC20 / ERC721 / ERC1155 token handling | [reference/token-standards.md](reference/token-standards.md) |
+| Price feeds, oracle consumption | [reference/oracle.md](reference/oracle.md) |
+| Deposits/withdrawals, DeFi pricing logic | [reference/flashloan.md](reference/flashloan.md) |
+| Off-chain signatures, permit, meta-transactions | [reference/signatures.md](reference/signatures.md) |
+| Proxy / upgradeable contracts | [reference/upgradeable.md](reference/upgradeable.md) |
+| Multi-chain deployment, bridging | [reference/multichain.md](reference/multichain.md) |
